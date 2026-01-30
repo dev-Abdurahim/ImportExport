@@ -2,29 +2,24 @@ package org.example.importexportservice.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.example.importexportservice.custom.BusinessRegApiException;
 import org.example.importexportservice.dto.repsonse.IndividualResponseDto;
 import org.example.importexportservice.dto.repsonse.LegalResponseDto;
 import org.example.importexportservice.token.TokenHolder;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.util.UriBuilder;
 import org.springframework.web.util.UriComponentsBuilder;
 import reactor.core.publisher.Mono;
 
-import java.net.URI;
 import java.time.Duration;
 import java.util.Map;
-import java.util.function.Function;
 
 @Service
 @RequiredArgsConstructor
 @Slf4j
-
 public class BusinessRegService {
 
     private final WebClient webClient;
@@ -43,83 +38,94 @@ public class BusinessRegService {
      * @return LegalResponseDto yoki null (xato bo'lsa)
      */
 
-    public LegalResponseDto getLegalDetails(String tin) {
+    public Mono<LegalResponseDto> getLegalDetails(String tin) {
 
         if (tin == null || tin.length() != 9) {
-            log.warn("Noto'g'ri TIN uzunligi: {}", tin);
-            return null;
-
-        }
-        return callApi(
-                        ignored -> UriComponentsBuilder.fromUriString(legalUrl)
-                                .queryParam("tin", tin)
-                                .build()
-                                .toUri(),
-                        HttpMethod.GET,
-                        null,
-                        LegalResponseDto.class
-        );
-
-    }
-
-    public IndividualResponseDto getIndividualDetails(String pinfl) {
-
-        if (pinfl == null || pinfl.length() != 14) {
-            log.warn("Noto'g'ri PINFL uzunligi: {}", pinfl);
-            return null;
-
+            log.warn("⚠️ Noto‘g‘ri TIN uzunligi: {}", tin);
+            return Mono.empty();
         }
 
-         Map<String, String> body = Map.of("pinfl",pinfl);
-            return callApi(
-                uriBuilder -> UriComponentsBuilder.fromUriString(individualsUrl)
+        log.debug("🏢 Legal API chaqirilmoqda → INN={}", tin);
+
+        return webClient.get()
+                .uri(uriBuilder -> UriComponentsBuilder
+                        .fromUriString(legalUrl)
+                        .queryParam("tin", tin)
                         .build()
-                        .toUri(),
-                HttpMethod.POST,
-        body,
-        IndividualResponseDto.class
+                        .toUri())
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenHolder.getToken())
+                .accept(MediaType.APPLICATION_JSON)
 
-        );
+                .retrieve()
+
+                .onStatus(
+                        status -> status.value() == 429,
+                        response -> {
+                            log.warn("⏳ Legal API rate limit (429) → INN={} SKIP", tin);
+                            return Mono.error(new RuntimeException("Rate limit 429"));
+                        }
+                )
+
+                .onStatus(
+                        HttpStatusCode::is5xxServerError,
+                        response -> response.bodyToMono(String.class)
+                                .flatMap(body -> {
+                                    log.error("🔥 Legal API 5xx → INN={}, body={}", tin, body);
+                                    return Mono.error(new RuntimeException("Legal API 5xx"));
+                                })
+                )
+
+                .bodyToMono(LegalResponseDto.class)
+
+                .timeout(Duration.ofSeconds(10))
+
+                .onErrorResume(e -> {
+                    log.warn("⚠️ Legal API SKIP → INN={}", tin);
+                    return Mono.empty();
+                });
 
     }
 
-    private <T> T callApi(
-            Function<UriBuilder, URI> uriFunction,
-            HttpMethod method,
-            Object body,
-            Class<T> responseType) {
-
-        try {
-            WebClient.RequestBodyUriSpec request = webClient.method(method);
-
-            WebClient.RequestHeadersSpec<?> headersSpec = request
-                    .uri(uriFunction)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenHolder.getToken())
-                    .accept(MediaType.APPLICATION_JSON);
-
-            if (body != null && method == HttpMethod.POST) {
-                headersSpec = ((WebClient.RequestBodySpec) headersSpec)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .bodyValue(body);
-            }
-
-            return headersSpec
-                    .retrieve()
-                    .onStatus(
-                            status -> status.is4xxClientError() || status.is5xxServerError(),
-                            response -> response.bodyToMono(String.class)
-                                    .flatMap(errorBody -> Mono.error(
-                                            new BusinessRegApiException(
-                                                    "BusinessReg API xatosi: " + response.statusCode() +
-                                                            ", body: " + errorBody)))
-                    )
-                    .bodyToMono(responseType)
-                    .timeout(Duration.ofSeconds(10))
-                    .block();
-
-        } catch (Exception e) {
-            log.error("BusinessReg API xatosi → Method: {}, Sabab: {}", method, e.getMessage(), e);
-            return null;
+    public Mono<IndividualResponseDto> getIndividualDetails(String pinfl) {
+        if (pinfl == null || pinfl.length() != 14) {
+            log.warn("⚠️ Noto‘g‘ri PINFL uzunligi: {}", pinfl);
+            return Mono.empty();
         }
+
+        log.debug("👤 Individual API chaqirilmoqda → PINFL={}", pinfl);
+
+        Map<String, String> body = Map.of("pinfl", pinfl);
+
+        return webClient.post()
+                .uri(individualsUrl)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenHolder.getToken())
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(body)
+
+                .retrieve()
+
+                .onStatus(
+                        status -> status.is4xxClientError() || status.is5xxServerError(),
+                        response -> response.bodyToMono(String.class)
+                                .flatMap(b -> {
+                                    log.error("🔥 Individual API error → PINFL={}, body={}", pinfl, b);
+                                    return Mono.error(new RuntimeException("Individual API error"));
+                                })
+                )
+
+                .bodyToMono(IndividualResponseDto.class)
+
+                .timeout(Duration.ofSeconds(10))
+
+                // ✅ Bitta xato butun enrichni to‘xtatmasin
+                .onErrorResume(e -> {
+                    log.warn("⚠️ Individual API SKIP → PINFL={}", pinfl);
+                    return Mono.empty();
+                });
     }
 }
+
+
+
+
+

@@ -45,7 +45,6 @@ public class TokenService {
         formData.add("username", username);
         formData.add("password", password);
 
-
         try {
             String response = webClient.post()
                     .uri(tokenUrl)
