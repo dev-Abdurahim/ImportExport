@@ -11,12 +11,22 @@ import org.example.importexportservice.enums.TradeType;
 import org.hibernate.sql.Insert;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 
 @Entity
 @Data
-@Table(name = "trade_data")
-@AllArgsConstructor
+@Table(
+        name = "trade_data",
+        uniqueConstraints = @UniqueConstraint(
+                columnNames = {
+                        "company_inn",
+                        "hs_code",
+                        "declaration_date",
+                        "operation_type"
+                }
+        )
+)@AllArgsConstructor
 @NoArgsConstructor
 @Builder
 public class TradeData {
@@ -36,23 +46,16 @@ public class TradeData {
     @Column(name = "company_inn")
     private String companyInn;
 
-    @Column(columnDefinition = "TEXT")
-    private String companyName;
-
-    @Column(columnDefinition = "TEXT")
-    private String companyShortName;
-
-    @Column(columnDefinition = "TEXT")
-    private String firstName;
-
-    @Column(columnDefinition = "TEXT")
-    private String lastName;
-
     @Column(name = "hs_code")
     private String hsCode;
 
     @Column(name = "goods_value", precision = 19, scale = 3)
     private BigDecimal goodsValue;
+
+    private String normalizeGoodsValue(BigDecimal value) {
+        if (value == null) return "0";
+        return value.stripTrailingZeros().toPlainString();
+    }
 
     @Column(name = "country_code")
     private String countryCode;
@@ -60,25 +63,19 @@ public class TradeData {
     @Column(name = "declaration_date")
     private LocalDate declarationDate;
 
-    @Column(name = "unique_hash", unique = true, nullable = false, length = 64)
+    @Column(name = "unique_hash",nullable = false, length = 64)
     private String uniqueHash;
 
-    private String region;
-    @PrePersist
-    @PreUpdate
-    private void generateUniqueHash() {
-        if (this.uniqueHash == null || this.uniqueHash.isEmpty()) {
-            this.uniqueHash = calculateHash();
-        }
-    }
 
     public String calculateHash() {
-        String data = String.format("%s|%s|%s|%s|%s|%s",
-                tradeOperationType, hsCode, goodsValue, countryCode, companyInn, declarationDate);
+        String data = String.join("|",
+                tradeOperationType.name(),
+                hsCode,
+                normalizeGoodsValue(goodsValue),
+                countryCode,
+                companyInn,
+                declarationDate.toString()
+        );
         return DigestUtils.sha256Hex(data);
     }
-
-
-
-
 }

@@ -39,7 +39,6 @@ public class TradeDataServiceImpl implements TradeDataService {
     private final TradeStatisticsMapper tradeStatisticsMapper;
     private final BusinessRegService businessRegService;
 
-
     @Value("${app.api.endpoints.hscode}")
     private String hsFullUrl;
 
@@ -108,45 +107,132 @@ public class TradeDataServiceImpl implements TradeDataService {
     @Transactional
     protected void processAndSaveBuffer(List<TradeStatisticDTO> dtos) {
 
-        Map<String, TradeData> uniqueMap = new LinkedHashMap<>();
+        int received = dtos.size();
+        int inserted = 0;
+        int updated = 0;
+        int skipped = 0;
+
+
+        Map<String, TradeData> batchMap = new LinkedHashMap<>();
 
         for (TradeStatisticDTO dto : dtos) {
-            String inn = dto.getCompanyInn();
-            if (inn == null || inn.isBlank()) {
-                continue;
-            }
-
-            TradeType tradeType;
-            if (inn.length() == 9) {
-                tradeType = TradeType.LEGAL;
-            } else if (inn.length() == 14) {
-                tradeType = TradeType.INDIVIDUAL;
-            } else {
-                log.warn("Noma'lum INN/PINFL uzunligi: {}", inn);
+            if (dto.getCompanyInn() == null || dto.getCompanyInn().isBlank()) {
                 continue;
             }
 
             TradeData entity = tradeStatisticsMapper.toEntity(dto);
-            entity.setCompanyInn(inn);
-            entity.setTradeType(tradeType);
-            String hash = entity.calculateHash();
-            entity.setUniqueHash(hash);
-            uniqueMap.putIfAbsent(hash, entity);
+            entity.setCompanyInn(dto.getCompanyInn());
+
+            if(entity.getCompanyInn().length() == 9){
+                entity.setTradeType(TradeType.LEGAL);
+            } else if (entity.getCompanyInn().length() == 14) {
+                entity.setTradeType(TradeType.INDIVIDUAL);
+
+            }
+
+            // identity key (hash emas!)
+            String identityKey = entity.getCompanyInn() + "|" +
+                    entity.getHsCode() + "|" +
+                    entity.getDeclarationDate() + "|" +
+                    entity.getTradeOperationType();
+
+            // ⚠️ batch ichidagi duplicate’ni kesamiz
+            batchMap.putIfAbsent(identityKey, entity);
 
         }
-        if (uniqueMap.isEmpty()) {
-            return;
+
+        int batchDeduplicated = dtos.size() - batchMap.size();
+        log.debug("♻️ Batch ichida kesildi: {}", batchDeduplicated);
+
+        for (TradeData entity : batchMap.values()) {
+
+            List<TradeData> existings =
+                    tradeDataRepository
+                            .findByCompanyInnAndHsCodeAndDeclarationDateAndTradeOperationType(
+                                    entity.getCompanyInn(),
+                                    entity.getHsCode(),
+                                    entity.getDeclarationDate(),
+                                    entity.getTradeOperationType()
+                            );
+
+            if (existings.isEmpty()) {
+                entity.setUniqueHash(entity.calculateHash());
+                tradeDataRepository.save(entity);
+                inserted++;
+                continue;
+            }
+
+            TradeData existing = existings.get(0);
+
+            String newHash = entity.calculateHash();
+
+            if (newHash.equals(existing.getUniqueHash())) {
+                skipped++;
+                continue;
+            }
+
+            existing.setGoodsValue(entity.getGoodsValue());
+            existing.setCountryCode(entity.getCountryCode());
+            existing.setUniqueHash(newHash);
+
+            tradeDataRepository.save(existing);
+            updated++;
         }
 
-        Set<String> hashes = uniqueMap.keySet();
-        Set<String> existingHashes = new HashSet<>
-                (tradeDataRepository.findExistingHashes(hashes));
-        List<TradeData> toSave = uniqueMap.values().stream().filter(e -> !existingHashes.contains(e.getUniqueHash())).toList();
-        if (!toSave.isEmpty()) {
-            tradeDataRepository.saveAll(toSave);
-            log.info("{} ta yangi trade saqlandi", toSave.size());
-        }
+        log.info("""
+        📊 IMPORT / UPDATE STATISTIKASI:
+        📥 Kelgan DTO: {}
+        🆕 Yangi: {}
+        🔄 Update: {}
+        ⏭ Skip: {}
+        """, received, inserted, updated, skipped);
     }
+
+    @Override
+    public void updateTradeStatistics() {
+
+        LocalDate fromDate = LocalDate.now().minusDays(1);
+        LocalDate toDate = LocalDate.now();
+
+        log.info("🔄 Trade uchun UPDATE boshlandi → {} → {}", fromDate, toDate);
+
+        Flux.fromStream(fromDate.datesUntil(toDate.plusDays(1)))
+                .concatMap(updateDate -> {
+                    log.info("📅 UPDATE sana → {}", updateDate);
+                    return Flux.generate(
+                                    () -> 1,
+                                    (Integer page, SynchronousSink<Integer> sink) -> {
+                                        sink.next(page);
+                                        return page + 1;
+                                    }
+                            )
+                            .flatMap(page -> fetchPageReactive(page,updateDate,SENDER_PIN),
+                                    5)
+                            .takeUntil(r -> isEmpty(r.getTradeStatistics()))
+                            .filter( r -> !isEmpty(r.getTradeStatistics()))
+                            .flatMapIterable(TradeStatisticDTO.TradeStatRespDto::getTradeStatistics)
+                            .buffer(BUFFER_SIZE)
+                            .flatMap(batch ->
+                                    Mono.fromRunnable(() -> {
+                                                log.info("🔄 UPDATE batch → date={}, size={}",
+                                                        updateDate, batch.size());
+                                                processAndSaveBuffer(batch);
+
+                                            })
+                                            .subscribeOn(Schedulers.boundedElastic())
+                            );
+                })
+                .doOnComplete(() ->
+                        log.info("✅ Trade UPDATE yakunlandi → {} → {}", fromDate, toDate)
+                )
+                .doOnError(e ->
+                        log.error("❌ Trade UPDATE jarayonida xato", e)
+                )
+                .blockLast();
+
+
+    }
+
 
     private Mono<TradeStatisticDTO.TradeStatRespDto> fetchPageReactive(int page, LocalDate reqDate, String senderPin) {
         return webClient.get()

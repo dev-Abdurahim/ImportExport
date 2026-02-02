@@ -1,10 +1,11 @@
 package org.example.importexportservice.service;
 
-import reactor.core.publisher.Mono;
 
-public interface TradeDataService {
+    public interface TradeDataService {
 
     void importTradeStatistics();
 
-   void enrichMissingOrganizations();
+    void enrichMissingOrganizations();
+
+    void updateTradeStatistics();
 }

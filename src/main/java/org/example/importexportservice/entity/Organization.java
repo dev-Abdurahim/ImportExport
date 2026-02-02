@@ -26,7 +26,6 @@ public class Organization {
     private String firstName;
     private String lastName;
 
-    private String soatoCode;
     private String region;
     private String district;
 

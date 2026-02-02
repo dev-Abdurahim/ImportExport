@@ -20,7 +20,7 @@ import java.util.Map;
 @Service
 @RequiredArgsConstructor
 @Slf4j
-public class BusinessRegService {
+    public class BusinessRegService {
 
     private final WebClient webClient;
     private final TokenHolder tokenHolder;

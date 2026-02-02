@@ -1,22 +1,22 @@
 package org.example.importexportservice;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.example.importexportservice.service.TradeDataService;
-import org.example.importexportservice.service.TradeDataServiceImpl;
 import org.springframework.boot.CommandLineRunner;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 @Component
 @RequiredArgsConstructor
-public class ImportDataLoader {
+@Slf4j
+public class ImportDataLoader implements CommandLineRunner {
 
     private final TradeDataService tradeDataService;
 
-    @EventListener(ApplicationReadyEvent.class)
-    public void onReady() {
-        tradeDataService.importTradeStatistics();
-
+    @Override
+    public void run(String... args) throws Exception {
+//        log.info("Import qilish boshlandi...🙂");
+//        tradeDataService.importTradeStatistics();
+        tradeDataService.updateTradeStatistics();
     }
 }
